@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cannect — Admin login (Telegram OIDC)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 16px; color: #111; }
+    h1 { font-size: 20px; }
+    .step { border: 1px solid #e5e5e5; border-radius: 10px; padding: 16px; margin: 14px 0; }
+    .step h2 { font-size: 15px; margin: 0 0 10px; }
+    label { display: block; font-size: 13px; margin: 8px 0 4px; color: #444; }
+    input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
+    button { margin-top: 12px; padding: 9px 14px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+    button:disabled { background: #9bb4ee; cursor: default; }
+    pre { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px; overflow:auto; font-size: 12px; }
+    .ok { color: #16a34a; } .err { color: #dc2626; }
+    .muted { color:#666; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h1>Admin login — password + Telegram OIDC</h1>
+  <p class="muted">Page is served by the backend (same origin). Telegram OIDC needs a bot with Web Login configured
+    (@BotFather → Bot Settings → Web Login) and the redirect URL registered there.</p>
+
+  <div class="step">
+    <h2>1 — Password (first factor)</h2>
+    <label>Email</label>
+    <input id="email" value="admin@cannect.kz" />
+    <label>Password</label>
+    <input id="password" type="password" value="Passw0rd!" />
+    <button id="loginBtn">Login</button>
+    <div id="loginOut" class="muted"></div>
+  </div>
+
+  <div class="step">
+    <h2>2 — Telegram OIDC (second factor)</h2>
+    <p class="muted">Auth Code + PKCE, RS256. Redirects to Telegram and back to the callback, which returns here.</p>
+    <button id="oidcBtn" disabled>Login via Telegram</button>
+  </div>
+
+  <div class="step">
+    <h2>Result</h2>
+    <pre id="out">—</pre>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const out = $('out');
+    let twoFactorToken = null;
+
+    function log(obj, cls) {
+      out.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+      out.className = cls || '';
+    }
+
+    $('loginBtn').onclick = async () => {
+      $('loginOut').textContent = '';
+      try {
+        const res = await fetch('/admin/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: $('email').value, password: $('password').value }),
+        });
+        const data = await res.json();
+        if (!res.ok) { log(data, 'err'); return; }
+        twoFactorToken = data.twoFactorToken;
+        $('loginOut').innerHTML = '<span class="ok">✓ password ok — continue with Telegram</span>';
+        $('oidcBtn').disabled = false;
+        log(data);
+      } catch (e) { log(String(e), 'err'); }
+    };
+
+    // After the OIDC callback redirects back here with #token=…, render it.
+    (function handleOidcReturn() {
+      const h = window.location.hash;
+      if (!h.startsWith('#token=')) { return; }
+      const token = decodeURIComponent(h.slice('#token='.length));
+      history.replaceState(null, '', window.location.pathname);
+      fetch('/admin/auth/me', { headers: { Authorization: 'Bearer ' + token } })
+        .then((r) => r.json())
+        .then((me) => log({ oidc: 'success', accessToken: token, me }, 'ok'))
+        .catch((e) => log(String(e), 'err'));
+    })();
+
+    // OIDC is a full-page redirect: hand the pending token to the backend,
+    // which 302s to Telegram and back to the callback.
+    $('oidcBtn').onclick = () => {
+      if (!twoFactorToken) { log('Do step 1 (password) first', 'err'); return; }
+      window.location.href = '/admin/auth/oidc/start?twoFactorToken=' + encodeURIComponent(twoFactorToken);
+    };
+  </script>
+</body>
+</html>

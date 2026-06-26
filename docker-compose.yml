@@ -1,0 +1,49 @@
+services:
+  mongo:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_DATABASE: cannect
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ENV: development
+      PORT: "8080"
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: cannect
+      REDIS_ADDR: redis:6379
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+    ports:
+      - "8080:8080"
+
+volumes:
+  mongo-data:
+  redis-data:
