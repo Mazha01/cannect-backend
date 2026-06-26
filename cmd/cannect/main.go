@@ -66,7 +66,15 @@ func run() error {
 
 	// Auth wiring.
 	jwtMgr := auth.NewManager(cfg.Auth.JWTSecret, cfg.Auth.AccessTokenTTL)
-	mailer := email.NewLogMailer(log)
+
+	var mailer email.Mailer
+	if smtp := email.NewSMTPMailer(cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.User, cfg.SMTP.Password, cfg.SMTP.From); smtp.Enabled() {
+		mailer = smtp
+		log.Info("smtp mailer enabled", "host", cfg.SMTP.Host, "from", cfg.SMTP.From)
+	} else {
+		mailer = email.NewLogMailer(log)
+		log.Info("smtp mailer disabled — using log mailer (codes printed to the log)")
+	}
 	userRepo := repository.NewUserRepository(db.Database)
 	if err := userRepo.EnsureIndexes(bootCtx); err != nil {
 		return fmt.Errorf("ensure user indexes: %w", err)
@@ -78,7 +86,7 @@ func run() error {
 		RedirectURL:  cfg.Google.RedirectURL,
 	})
 	if googleAuth.Enabled() {
-		log.Info("google sign-in enabled (with email second factor)")
+		log.Info("google sign-in enabled (direct, like cannect-web)")
 	} else {
 		log.Info("google sign-in disabled (set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET to enable)")
 	}

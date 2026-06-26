@@ -18,7 +18,19 @@ type Config struct {
 	Auth     Auth
 	Google   Google
 	Telegram Telegram
+	SMTP     SMTP
 	Log      Log
+}
+
+// SMTP configures outbound email (verification / reset / welcome). Mirrors the
+// cannect-web env names. When Host + User are empty, the app falls back to the
+// dev LogMailer (codes printed to the log instead of sent).
+type SMTP struct {
+	Host     string `env:"SMTP_HOST" envDefault:""`
+	Port     int    `env:"SMTP_PORT" envDefault:"465"`
+	User     string `env:"SMTP_USER" envDefault:""`
+	Password string `env:"SMTP_PASSWORD" envDefault:""`
+	From     string `env:"EMAIL_FROM" envDefault:""`
 }
 
 type HTTP struct {
