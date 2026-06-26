@@ -263,64 +263,44 @@ func (s *AuthService) GoogleAuthURL(state string) (string, error) {
 	return s.google.AuthCodeURL(state), nil
 }
 
-// GoogleStartCallback exchanges the OAuth code, upserts the user and — as the
-// second factor — emails a login code. Returns the normalized email; the caller
-// completes the login with CompleteGoogleLogin once the user enters the code.
-func (s *AuthService) GoogleStartCallback(ctx context.Context, code string) (string, error) {
-	const op fault.Op = "service.auth.GoogleStartCallback"
+// GoogleCallback exchanges the OAuth code, upserts the user and issues an
+// access token directly (no second factor) — mirrors the cannect-web flow.
+func (s *AuthService) GoogleCallback(ctx context.Context, code string) (string, *domain.User, error) {
+	const op fault.Op = "service.auth.GoogleCallback"
 	if s.google == nil || !s.google.Enabled() {
-		return "", fault.NewStringError(op, fault.BadRequest, "google sign-in is not configured")
+		return "", nil, fault.NewStringError(op, fault.BadRequest, "google sign-in is not configured")
 	}
 	gu, err := s.google.Exchange(ctx, code)
 	if err != nil {
-		return "", fault.NewError(op, fault.Unauthorized, err)
+		return "", nil, fault.NewError(op, fault.Unauthorized, err)
 	}
-	return s.upsertGoogleAndSendCode(ctx, op, gu)
+	return s.upsertGoogleAndIssue(ctx, op, gu)
 }
 
-// GoogleStartIDToken is the mobile/one-tap counterpart of GoogleStartCallback:
-// it verifies a Google ID token directly, upserts the user and emails the
-// second-factor code.
-func (s *AuthService) GoogleStartIDToken(ctx context.Context, idToken string) (string, error) {
-	const op fault.Op = "service.auth.GoogleStartIDToken"
+// GoogleIDToken is the mobile/one-tap counterpart: it verifies a Google ID
+// token directly, upserts the user and issues an access token.
+func (s *AuthService) GoogleIDToken(ctx context.Context, idToken string) (string, *domain.User, error) {
+	const op fault.Op = "service.auth.GoogleIDToken"
 	if s.google == nil || !s.google.Enabled() {
-		return "", fault.NewStringError(op, fault.BadRequest, "google sign-in is not configured")
+		return "", nil, fault.NewStringError(op, fault.BadRequest, "google sign-in is not configured")
 	}
 	if idToken == "" {
-		return "", fault.NewStringError(op, fault.BadRequest, "idToken is required")
+		return "", nil, fault.NewStringError(op, fault.BadRequest, "idToken is required")
 	}
 	gu, err := s.google.VerifyIDToken(ctx, idToken)
 	if err != nil {
-		return "", fault.NewError(op, fault.Unauthorized, err)
+		return "", nil, fault.NewError(op, fault.Unauthorized, err)
 	}
-	return s.upsertGoogleAndSendCode(ctx, op, gu)
-}
-
-// CompleteGoogleLogin validates the emailed second-factor code for a Google
-// sign-in and issues the access token.
-func (s *AuthService) CompleteGoogleLogin(ctx context.Context, emailAddr, code string) (string, *domain.User, error) {
-	const op fault.Op = "service.auth.CompleteGoogleLogin"
-	user, err := s.requireUser(ctx, op, emailAddr)
-	if err != nil {
-		return "", nil, err
-	}
-	if err := validateCode(op, user.VerificationCode, user.VerificationCodeExpiry, code); err != nil {
-		return "", nil, err
-	}
-	user.VerificationCode = ""
-	user.VerificationCodeExpiry = time.Time{}
-	user.LastLogin = time.Now()
-	if err := s.users.Update(ctx, user); err != nil {
-		return "", nil, err
-	}
-	return s.issueToken(op, user)
+	return s.upsertGoogleAndIssue(ctx, op, gu)
 }
 
 // --- helpers ---
 
-func (s *AuthService) upsertGoogleAndSendCode(ctx context.Context, op fault.Op, gu *auth.GoogleUser) (string, error) {
+// upsertGoogleAndIssue finds or creates the Google-linked user, stamps lastLogin
+// and returns a freshly issued access token.
+func (s *AuthService) upsertGoogleAndIssue(ctx context.Context, op fault.Op, gu *auth.GoogleUser) (string, *domain.User, error) {
 	if !gu.EmailVerified {
-		return "", fault.NewStringError(op, fault.Forbidden, "google email is not verified")
+		return "", nil, fault.NewStringError(op, fault.Forbidden, "google email is not verified")
 	}
 	emailAddr := normalizeEmail(gu.Email)
 
@@ -333,6 +313,10 @@ func (s *AuthService) upsertGoogleAndSendCode(ctx context.Context, op fault.Op, 
 		if user.AuthProvider == "" {
 			user.AuthProvider = domain.AuthProviderGoogle
 		}
+		user.LastLogin = time.Now()
+		if err := s.users.Update(ctx, user); err != nil {
+			return "", nil, err
+		}
 	case fault.Is(fault.NotFound, err):
 		user = &domain.User{
 			Email:         emailAddr,
@@ -340,18 +324,16 @@ func (s *AuthService) upsertGoogleAndSendCode(ctx context.Context, op fault.Op, 
 			GoogleID:      gu.Sub,
 			Role:          domain.RoleUser,
 			EmailVerified: true,
+			LastLogin:     time.Now(),
 		}
 		if err := s.users.Create(ctx, user); err != nil {
-			return "", err
+			return "", nil, err
 		}
 	default:
-		return "", err
+		return "", nil, err
 	}
 
-	if err := s.assignCode(ctx, op, user, codeKindVerification); err != nil {
-		return "", err
-	}
-	return user.Email, nil
+	return s.issueToken(op, user)
 }
 
 type codeKind int

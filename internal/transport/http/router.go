@@ -60,7 +60,6 @@ func NewRouter(d Deps) http.Handler {
 			r.Get("/google", d.Auth.GoogleRedirect)
 			r.Get("/callback/google", d.Auth.GoogleCallback)
 			r.Post("/google/mobile", d.Auth.GoogleMobile)
-			r.Post("/google/verify", d.Auth.GoogleVerify)
 
 			// Authenticated.
 			r.Group(func(r chi.Router) {

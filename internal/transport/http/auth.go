@@ -3,7 +3,6 @@ package http
 import (
 	"errors"
 	"net/http"
-	"net/url"
 	"time"
 
 	"cannect/internal/domain"
@@ -206,8 +205,9 @@ func (h *AuthHandler) GoogleRedirect(w http.ResponseWriter, r *http.Request) {
 }
 
 // GoogleCallback — GET /auth/callback/google. Verifies the Google identity and
-// emails the second-factor code, then bounces the browser to the configured
-// page to enter it (or returns JSON when no redirect URL is set).
+// issues the token directly (mirrors cannect-web). Sets the cookie and either
+// redirects the browser to the configured post-auth URL with the token in the
+// fragment, or returns JSON when no redirect URL is set.
 func (h *AuthHandler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 	if e := r.URL.Query().Get("error"); e != "" {
 		writeError(w, r, errBadRequest("google oauth error: "+e))
@@ -218,50 +218,35 @@ func (h *AuthHandler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errBadRequest("missing code"))
 		return
 	}
-	emailAddr, err := h.svc.GoogleStartCallback(r.Context(), code)
+	token, user, err := h.svc.GoogleCallback(r.Context(), code)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	if h.googleRedirectURL == "" {
-		writeJSON(w, http.StatusOK, map[string]any{"requires2FA": true, "email": emailAddr})
+	setTokenCookie(w, token)
+	if h.googleRedirectURL != "" {
+		http.Redirect(w, r, h.googleRedirectURL+"#token="+token, http.StatusFound)
 		return
 	}
-	q := url.Values{}
-	q.Set("email", emailAddr)
-	q.Set("requires2fa", "1")
-	http.Redirect(w, r, h.googleRedirectURL+"?"+q.Encode(), http.StatusFound)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accessToken": token,
+		"user":        toUserResponse(user),
+	})
 }
 
 type googleMobileRequest struct {
 	IDToken string `json:"idToken" validate:"required"`
 }
 
-// GoogleMobile — POST /auth/google/mobile. Verifies a Google ID token and emails
-// the second-factor code.
+// GoogleMobile — POST /auth/google/mobile. Verifies a Google ID token and issues
+// the access token directly.
 func (h *AuthHandler) GoogleMobile(w http.ResponseWriter, r *http.Request) {
 	var req googleMobileRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, r, err)
 		return
 	}
-	emailAddr, err := h.svc.GoogleStartIDToken(r.Context(), req.IDToken)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"requires2FA": true, "email": emailAddr})
-}
-
-// GoogleVerify — POST /auth/google/verify. Completes a Google sign-in with the
-// emailed second-factor code and issues the access token.
-func (h *AuthHandler) GoogleVerify(w http.ResponseWriter, r *http.Request) {
-	var req verifyRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	token, user, err := h.svc.CompleteGoogleLogin(r.Context(), req.Email, req.Code)
+	token, user, err := h.svc.GoogleIDToken(r.Context(), req.IDToken)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -269,9 +254,8 @@ func (h *AuthHandler) GoogleVerify(w http.ResponseWriter, r *http.Request) {
 	h.respondWithToken(w, token, user)
 }
 
-// respondWithToken sets the token cookie (mirrors the web non-httpOnly cookie)
-// and returns the token + user in the body.
-func (h *AuthHandler) respondWithToken(w http.ResponseWriter, token string, user *domain.User) {
+// setTokenCookie writes the auth cookie (non-httpOnly, mirrors the web side).
+func setTokenCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "token",
 		Value:    token,
@@ -280,6 +264,11 @@ func (h *AuthHandler) respondWithToken(w http.ResponseWriter, token string, user
 		HttpOnly: false,
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+// respondWithToken sets the token cookie and returns the token + user in the body.
+func (h *AuthHandler) respondWithToken(w http.ResponseWriter, token string, user *domain.User) {
+	setTokenCookie(w, token)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accessToken": token,
 		"user":        toUserResponse(user),
