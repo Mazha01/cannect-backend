@@ -1,137 +1,167 @@
 {
   "info": {
-    "name": "Cannect Backend — Auth",
-    "description": "User auth (email/password + Google) and admin auth (password + Telegram OIDC).\n\nSetup:\n1. make docker-up  (mongo + redis)\n2. go run ./cmd/seed --email admin@cannect.kz --password 'Passw0rd!'\n3. Run the API.\n\nNote: the admin SECOND factor (Telegram OIDC) is a browser redirect flow and can't be completed in Postman — use the dev page /dev/telegram-login for the full admin login. Postman covers the user flow + admin password step.",
+    "name": "Cannect Backend — Auth (full)",
+    "description": "All testable endpoints.\n\nSetup:\n1. docker compose up -d mongo redis\n2. go run ./cmd/seed --email admin@cannect.kz --password 'Passw0rd!'\n3. run the API (LOG_FORMAT=text to read codes from the log).\n\nFlows that need a BROWSER (cannot complete in Postman): Google consent (/auth/google → callback) and admin Telegram OIDC (/admin/auth/oidc/*). For those, use the dev page /dev/telegram-login and Google Console redirect setup.\n\nEmail codes (verify / reset) are printed to the server log by the dev LogMailer — copy them into userCode / resetCode.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     { "key": "baseUrl", "value": "http://localhost:8080" },
     { "key": "adminEmail", "value": "admin@cannect.kz" },
     { "key": "adminPassword", "value": "Passw0rd!" },
-    { "key": "twoFactorToken", "value": "" },
-    { "key": "accessToken", "value": "" },
-    { "key": "userEmail", "value": "user@cannect.kz" },
+    { "key": "userEmail", "value": "" },
     { "key": "userPassword", "value": "Passw0rd!" },
-    { "key": "userCode", "value": "", "description": "6-digit code from server log (LogMailer)" }
+    { "key": "userCode", "value": "", "description": "verify code from server log" },
+    { "key": "resetCode", "value": "", "description": "reset code from server log" },
+    { "key": "newPassword", "value": "NewPassw0rd!" },
+    { "key": "accessToken", "value": "" },
+    { "key": "adminToken", "value": "", "description": "from browser OIDC login" },
+    { "key": "twoFactorToken", "value": "" }
   ],
   "item": [
     {
       "name": "Health",
-      "request": {
-        "method": "GET",
-        "url": { "raw": "{{baseUrl}}/healthz", "host": ["{{baseUrl}}"], "path": ["healthz"] }
-      }
-    },
-    {
-      "name": "Admin auth",
       "item": [
-        {
-          "name": "Admin 1. Login (password)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const j = pm.response.json();",
-                  "if (j.twoFactorToken) { pm.collectionVariables.set('twoFactorToken', j.twoFactorToken); }",
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('got twoFactorToken', () => pm.expect(j.twoFactorToken).to.be.a('string'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
-            },
-            "url": { "raw": "{{baseUrl}}/admin/auth/login", "host": ["{{baseUrl}}"], "path": ["admin", "auth", "login"] },
-            "description": "First factor. Returns twoFactorToken. Complete the second factor (Telegram OIDC) in a browser via GET /admin/auth/oidc/start?twoFactorToken=… — use the dev page /dev/telegram-login."
-          }
-        },
-        {
-          "name": "Admin 2. Me (after browser OIDC login)",
-          "request": {
-            "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
-            "url": { "raw": "{{baseUrl}}/admin/auth/me", "host": ["{{baseUrl}}"], "path": ["admin", "auth", "me"] },
-            "description": "Paste the accessToken obtained from the browser OIDC flow into the accessToken variable."
-          }
-        }
+        { "name": "healthz", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/healthz", "host": ["{{baseUrl}}"], "path": ["healthz"] } } },
+        { "name": "readyz", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/readyz", "host": ["{{baseUrl}}"], "path": ["readyz"] } } },
+        { "name": "ping", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/ping", "host": ["{{baseUrl}}"], "path": ["ping"] } } }
       ]
     },
     {
       "name": "User auth",
       "item": [
         {
-          "name": "1. Register",
+          "name": "1. Register (fresh email)",
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "pm.collectionVariables.set('userEmail', 'user' + Date.now() + '@cannect.kz');"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('201/200', () => pm.expect([200,201]).to.include(pm.response.code));",
+              "console.log('Registered:', pm.collectionVariables.get('userEmail'), '— take the 6-digit code from the SERVER LOG and put it into userCode.');"
+            ] } }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
-            },
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}" },
             "url": { "raw": "{{baseUrl}}/auth/register", "host": ["{{baseUrl}}"], "path": ["auth", "register"] }
           }
         },
         {
-          "name": "2. Verify email (code from server log)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const j = pm.response.json();",
-                  "if (j.accessToken) { pm.collectionVariables.set('accessToken', j.accessToken); }"
-                ]
-              }
-            }
-          ],
+          "name": "2. Verify email (set userCode first)",
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "const j = pm.response.json();",
+            "if (j.accessToken) pm.collectionVariables.set('accessToken', j.accessToken);",
+            "pm.test('200 + token', () => { pm.response.to.have.status(200); pm.expect(j.accessToken).to.be.a('string'); });"
+          ] } } ],
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"code\": \"{{userCode}}\"\n}"
-            },
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"code\": \"{{userCode}}\"\n}" },
             "url": { "raw": "{{baseUrl}}/auth/verify-email", "host": ["{{baseUrl}}"], "path": ["auth", "verify-email"] }
           }
         },
         {
-          "name": "3. Login",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const j = pm.response.json();",
-                  "if (j.accessToken) { pm.collectionVariables.set('accessToken', j.accessToken); }"
-                ]
-              }
-            }
-          ],
+          "name": "3. Resend code",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
-            },
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{userEmail}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/auth/resend-code", "host": ["{{baseUrl}}"], "path": ["auth", "resend-code"] }
+          }
+        },
+        {
+          "name": "4. Login",
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "const j = pm.response.json();",
+            "if (j.accessToken) pm.collectionVariables.set('accessToken', j.accessToken);"
+          ] } } ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}" },
             "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] }
           }
         },
         {
-          "name": "4. Me",
+          "name": "5. Me",
           "request": {
             "method": "GET",
             "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
             "url": { "raw": "{{baseUrl}}/auth/me", "host": ["{{baseUrl}}"], "path": ["auth", "me"] }
+          }
+        },
+        {
+          "name": "6. Forgot password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{userEmail}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/auth/forgot-password", "host": ["{{baseUrl}}"], "path": ["auth", "forgot-password"] },
+            "description": "Reset code is printed to the server log → put it into resetCode."
+          }
+        },
+        {
+          "name": "7. Reset password (set resetCode first)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"code\": \"{{resetCode}}\",\n  \"newPassword\": \"{{newPassword}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/auth/reset-password", "host": ["{{baseUrl}}"], "path": ["auth", "reset-password"] }
+          }
+        },
+        {
+          "name": "8. Logout",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{baseUrl}}/auth/logout", "host": ["{{baseUrl}}"], "path": ["auth", "logout"] }
+          }
+        },
+        {
+          "name": "9. Google redirect (302 — inspect Location)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/auth/google", "host": ["{{baseUrl}}"], "path": ["auth", "google"] },
+            "description": "Turn OFF 'Automatically follow redirects' in Postman settings to see the 302 Location to accounts.google.com. Full login must be done in a browser."
+          }
+        },
+        {
+          "name": "10. Google mobile (needs real idToken)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"idToken\": \"<real-google-id-token>\"\n}" },
+            "url": { "raw": "{{baseUrl}}/auth/google/mobile", "host": ["{{baseUrl}}"], "path": ["auth", "google", "mobile"] },
+            "description": "With a fake idToken returns 401. Needs a genuine Google ID token (from a mobile/one-tap client)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin auth",
+      "item": [
+        {
+          "name": "1. Login (password)",
+          "event": [ { "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "const j = pm.response.json();",
+            "if (j.twoFactorToken) pm.collectionVariables.set('twoFactorToken', j.twoFactorToken);",
+            "pm.test('200 + twoFactorToken', () => { pm.response.to.have.status(200); pm.expect(j.twoFactorToken).to.be.a('string'); });",
+            "console.log('Now complete the 2nd factor in a BROWSER: open', pm.collectionVariables.get('baseUrl') + '/admin/auth/oidc/start?twoFactorToken=' + (j.twoFactorToken||''));"
+          ] } } ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/admin/auth/login", "host": ["{{baseUrl}}"], "path": ["admin", "auth", "login"] }
+          }
+        },
+        {
+          "name": "2. Me (paste adminToken from browser OIDC)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/admin/auth/me", "host": ["{{baseUrl}}"], "path": ["admin", "auth", "me"] },
+            "description": "The 2nd factor (Telegram OIDC) is browser-only. Complete it at /dev/telegram-login, copy the accessToken into adminToken, then run this."
           }
         }
       ]
